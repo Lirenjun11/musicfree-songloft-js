@@ -5,6 +5,19 @@ import { CryptoJs, axios, sanitizePluginCode, createEnv, createRequire } from '.
 const PLUGIN_TIMEOUT = 30000;
 const QUALITY_ORDER = ['super', 'high', 'standard', 'low'];
 
+function normalizeDuration(d: any): number {
+  if (d == null) return 0;
+  if (typeof d === 'string' && /^\d{1,2}:\d{2}(:\d{2})?$/.test(d.trim())) {
+    const parts = d.trim().split(':').map(Number);
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  let n = typeof d === 'number' ? d : parseFloat(String(d));
+  if (isNaN(n) || n <= 0) return 0;
+  if (n > 600) n = n / 1000;
+  return Math.round(n);
+}
+
 interface MusicItem {
   id: string;
   title: string;
@@ -168,6 +181,17 @@ function loadPluginFromCode(code: string, url: string): LoadResult {
 
     // 预处理：修复 QuickJS 严格的"参数重定义"语法（let/const→var，保留 for 头）
     processedCode = sanitizePluginCode(processedCode);
+
+    // 补丁：给格式化函数添加 duration 字段（某些插件如 元力KW 的 mapper 会丢弃 duration）
+    // 匹配 'formats':VAR[...] 或者以 'artistId':VAR[...]} 结尾的对象
+    processedCode = processedCode.replace(
+      /'formats':(\w+)\[/g,
+      "'duration':$1['duration']||0,'formats':$1["
+    );
+    processedCode = processedCode.replace(
+      /'artistId':(\w+)(\[[^\]]*\])\}(?=[\)\}])/g,
+      "'artistId':$1$2,'duration':$1['duration']||0}"
+    );
 
     // 构建 MusicFree 运行时依赖
     const moduleObj = { exports: {} as any };
@@ -545,7 +569,7 @@ router.get('/search', async (req) => {
         try {
           const result = await withTimeout(plugin.search!(query, page, type), SEARCH_TIMEOUT, `Search[${plugin.platform}]`);
           if (result && result.data) {
-            return result.data.map(item => ({ ...item, platform: plugin.platform }));
+            return result.data.map(item => ({ ...item, platform: plugin.platform, duration: normalizeDuration(item.duration) }));
           }
         } catch (error) {
           songloft.log.warn(`Search[${plugin.platform}] failed: ${error}`);
@@ -564,6 +588,29 @@ router.get('/search', async (req) => {
       );
     }
     const results = nested.flat();
+
+    // 对时长为 0 的条目尝试通过 getMusicInfo 补充时长
+    const enrichTasks: Promise<void>[] = [];
+    for (const item of results) {
+      if (item.duration > 0) continue;
+      const plugin = Array.from(installedPlugins.values()).find(p => p.platform === item.platform);
+      if (!plugin || typeof plugin.getMusicInfo !== 'function') continue;
+      enrichTasks.push(
+        (async () => {
+          try {
+            const info = await withTimeout(plugin.getMusicInfo!({ id: item.id, platform: item.platform }), PLUGIN_TIMEOUT, `getMusicInfo[${item.platform}]`);
+            if (info && info.duration) {
+              item.duration = normalizeDuration(info.duration);
+            }
+          } catch { /* ignore */ }
+        })()
+      );
+      // 最多并行补 3 条，避免雪崩
+      if (enrichTasks.length >= 3) break;
+    }
+    if (enrichTasks.length > 0) {
+      await Promise.allSettled(enrichTasks);
+    }
 
     return jsonResponse({ isEnd: results.length === 0, data: results });
   } catch (error) {
@@ -626,6 +673,18 @@ async function handleMusicUrl(req: HTTPRequest): Promise<HTTPResponse> {
     const platform = musicItem.platform;
     if (!platform) {
       return jsonResponse({ error: 'platform is required in source_data' }, 400);
+    }
+    // 使用插件设置的默认音质
+    if (quality === 'standard') {
+      try {
+        const rawSettings = await songloft.storage.get('adapter_settings');
+        if (rawSettings) {
+          const settings = JSON.parse(String(rawSettings));
+          if (settings.defaultQuality && QUALITY_ORDER.indexOf(settings.defaultQuality) !== -1) {
+            quality = settings.defaultQuality;
+          }
+        }
+      } catch (e) { /* ignore, use passed quality */ }
     }
     const plugin = Array.from(installedPlugins.values()).find(p => p.platform === platform);
     if (!plugin || typeof plugin.getMediaSource !== 'function') {
@@ -1007,7 +1066,7 @@ router.post('/external/search', async (req) => {
         try {
           const result = await withTimeout(plugin.search!(keyword.trim(), 1, 'music'), PLUGIN_TIMEOUT, `Search[${plugin.platform}]`);
           if (result && result.data) {
-            return result.data.map(item => ({ ...item, platform: plugin.platform }));
+            return result.data.map(item => ({ ...item, platform: plugin.platform, duration: normalizeDuration(item.duration) }));
           }
         } catch (error) {
           songloft.log.warn(`External search[${plugin.platform}] failed: ${error}`);
@@ -1067,6 +1126,7 @@ router.post('/external/search', async (req) => {
         );
         if (fullInfo) {
           fullMusicItem = { ...bestMatch, ...fullInfo } as MusicItem;
+          fullMusicItem.duration = normalizeDuration(fullMusicItem.duration);
         }
       } catch (e) {
         songloft.log.warn(`getMusicInfo failed for external search: ${e}`);
@@ -1106,6 +1166,7 @@ router.post('/external/search', async (req) => {
     }
 
     const artistStr = Array.isArray(bestMatch.artist) ? bestMatch.artist.join(' / ') : (bestMatch.artist || '');
+    const finalDuration = fullMusicItem.duration || bestMatch.duration || 0;
 
     // 构建 source_data（完整的 musicItem 信息，供后续使用）
     const sourceData: Record<string, any> = {
@@ -1129,7 +1190,7 @@ router.post('/external/search', async (req) => {
         title: bestMatch.title || '',
         artist: artistStr,
         album: bestMatch.album || '',
-        duration: bestMatch.duration || 0,
+        duration: finalDuration,
         cover_url: bestMatch.artwork || '',
         url: songUrl,
         source_data: sourceData,
