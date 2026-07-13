@@ -81,7 +81,7 @@ interface MusicFreePlugin {
   getTopLists?: () => Promise<TopListGroup[]>;
   getTopListDetail?: (topListItem: MusicSheetItem, page: number) => Promise<TopListDetailResult>;
   getRecommendSheetTags?: () => Promise<string[]>;
-  getRecommendSheetsByTag?: (tag: string, page: number) => Promise<SearchResult>;
+  getRecommendSheetsByTag?: (tag: any, page: number) => Promise<SearchResult>;
 }
 
 const installedPlugins: Map<string, MusicFreePlugin> = new Map();
@@ -193,11 +193,10 @@ function loadPluginFromCode(code: string, url: string): LoadResult {
       "'artistId':$1$2,'duration':$1['duration']||0}"
     );
 
-    // 补丁：移除 元力KW 插件的歌单相关函数导出（数据量太大导致加载缓慢）
-    processedCode = processedCode.replace(
-      /,'importMusicSheet':importMusicSheet,'getRecommendSheetTags':getRecommendSheetTags,'getRecommendSheetsByTag':getRecommendSheetsByTag,'getMusicSheetInfo':getMusicSheetInfo/g,
-      ''
-    );
+    // 补丁：移除 元力KW 插件的多余歌单函数导出（仅移除 importMusicSheet / getRecommendSheetTags / getMusicSheetInfo，保留 getRecommendSheetsByTag）
+    processedCode = processedCode.replace(/,'importMusicSheet':importMusicSheet/g, '');
+    processedCode = processedCode.replace(/,'getRecommendSheetTags':getRecommendSheetTags/g, '');
+    processedCode = processedCode.replace(/,'getMusicSheetInfo':getMusicSheetInfo/g, '');
 
     // 构建 MusicFree 运行时依赖
     const moduleObj = { exports: {} as any };
@@ -373,6 +372,7 @@ router.get('/plugins', () => {
       importMusicSheet: typeof plugin.importMusicSheet === 'function',
       getMusicInfo: typeof plugin.getMusicInfo === 'function',
       getRecommendSheetTags: typeof plugin.getRecommendSheetTags === 'function',
+      getRecommendSheetsByTag: typeof plugin.getRecommendSheetsByTag === 'function',
     }
   }));
   return jsonResponse({ plugins });
@@ -881,6 +881,38 @@ router.get('/top-list-detail', async (req) => {
 });
 
 // === 热门歌单 ===
+// 获取所有启用插件的热门歌单（与 /top-lists 逻辑一致，一次性返回所有平台）
+router.get('/recommend-sheets', async () => {
+  try {
+    const groups: { platform: string; title: string; items: MusicSheetItem[] }[] = [];
+    for (const [url, plugin] of installedPlugins) {
+      if (disabledPlugins.has(url) || typeof plugin.getRecommendSheetsByTag !== 'function') continue;
+      try {
+        // 先试 null tag，失败则试 {}（兼容不同插件的参数期待）
+        let result: any;
+        try {
+          result = await withTimeout(plugin.getRecommendSheetsByTag!(null, 1), PLUGIN_TIMEOUT, `getRecommendSheetsByTag[${plugin.platform}]`);
+        } catch {
+          result = await withTimeout(plugin.getRecommendSheetsByTag!({} as any, 1), PLUGIN_TIMEOUT, `getRecommendSheetsByTag[${plugin.platform}]`);
+        }
+        if (result && Array.isArray(result.data)) {
+          const items = result.data.map((item: any) => ({ ...item, platform: plugin.platform }));
+          groups.push({
+            platform: plugin.platform,
+            title: plugin.platform,
+            items,
+          });
+        }
+      } catch (error) {
+        songloft.log.error(`getRecommendSheetsByTag failed for ${plugin.platform}: ${error}`);
+      }
+    }
+    return jsonResponse({ groups });
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
+});
+
 router.get('/recommend-sheets/tags', async () => {
   try {
     const tagsByPlatform: { platform: string; tags: string[] }[] = [];
@@ -967,6 +999,38 @@ router.get('/recommend-sheets/list', async (req) => {
   }
 });
 
+// 简化版热门歌单：跳过 tags 步骤，直接调用 getRecommendSheetsByTag(null, 1) 获取默认推荐
+router.get('/recommend-sheets/by-platform', async (req) => {
+  try {
+    const queryParams = parseQuery(req.query || '');
+    const platform = queryParams['platform'];
+    if (!platform) {
+      return jsonResponse({ error: 'platform is required' }, 400);
+    }
+    const plugin = Array.from(installedPlugins.values()).find(p => p.platform === platform);
+    if (!plugin) {
+      return jsonResponse({ error: 'Plugin not found' }, 404);
+    }
+    if (typeof plugin.getRecommendSheetsByTag !== 'function') {
+      return jsonResponse({ error: 'Plugin does not support getRecommendSheetsByTag' }, 400);
+    }
+    // 先试 null tag，失败则试 {}（兼容不同插件的参数期待）
+    let result;
+    try {
+      result = await withTimeout(plugin.getRecommendSheetsByTag(null, 1), PLUGIN_TIMEOUT, `getRecommendSheetsByTag[${platform}]`);
+    } catch {
+      result = await withTimeout(plugin.getRecommendSheetsByTag({}, 1), PLUGIN_TIMEOUT, `getRecommendSheetsByTag[${platform}]`);
+    }
+    if (!result || !Array.isArray(result.data)) {
+      return jsonResponse({ sheets: [] });
+    }
+    const sheets = result.data.map((item: any) => ({ ...item, platform }));
+    return jsonResponse({ sheets, isEnd: result.isEnd !== false });
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
+});
+
 router.get('/recommend-sheets/detail', async (req) => {
   try {
     const queryParams = parseQuery(req.query || '');
@@ -989,6 +1053,13 @@ router.get('/recommend-sheets/detail', async (req) => {
     }
 
     const sheet: MusicSheetItem = { id, title: '', platform };
+    // 传递所有额外参数，和 top-list-detail 逻辑一致
+    for (const key in queryParams) {
+      if (key !== 'platform' && key !== 'id' && key !== 'page' && key !== 'pageSize') {
+        (sheet as any)[key] = queryParams[key];
+      }
+    }
+
     const result = await withTimeout(plugin.getMusicSheetInfo(sheet, page), PLUGIN_TIMEOUT, `getMusicSheetInfo[${platform}]`);
     if (!result || !Array.isArray(result.musicList)) {
       return jsonResponse({ isEnd: true, songs: [] });

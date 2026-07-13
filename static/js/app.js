@@ -89,6 +89,7 @@
         return;
       }
       var plugins = data.plugins || [];
+      window._allPlugins = plugins;
       updateNoPluginTip(plugins);
       if (plugins.length === 0) {
         pluginListEl.innerHTML = '<div class="empty-state">暂无已安装的 MusicFree 插件，点击右上角「添加插件」安装。</div>';
@@ -1459,45 +1460,48 @@
     rankListEl.style.display = '';
   });
 
-  // --- 热门歌单 ---
+  // --- 热门歌单（与排行榜逻辑一致：一次性获取所有启用插件的歌单，按平台tab切换） ---
   var hsListEl = document.getElementById('hs-list');
   var hsTagsEl = document.getElementById('hs-tags');
   var hsDetailEl = document.getElementById('hs-detail');
   var hsDetailTitle = document.getElementById('hs-detail-title');
   var hsDetailSongs = document.getElementById('hs-detail-songs');
-  var allHotSheetGroups = [];
-  var hsCtx = { platform: '', tag: '', page: 1, isEnd: false, loading: false };
+  var allHsGroups = [];
+  var currentHsPlatform = '';
+  var hsCtx = { platform: '', id: '', page: 1, isEnd: false, loading: false };
 
-  function renderHotSheetGroups(platform) {
-    var filtered = platform ? allHotSheetGroups.filter(function (g) { return g.platform === platform; }) : allHotSheetGroups;
+  function renderHsGroups(platform) {
+    var filtered = platform ? allHsGroups.filter(function (g) { return g.platform === platform; }) : allHsGroups;
     if (filtered.length === 0) {
       hsListEl.innerHTML = '<div class="empty-state">该平台暂无热门歌单</div>';
       return;
     }
     var html = '';
     filtered.forEach(function (group) {
-      if (group.tag) {
-        html += '<div class="rank-group-title">' + escapeHtml(group.tag) + '</div>';
+      if (group.title) {
+        html += '<div class="rank-group-title">' + escapeHtml(group.title) + '</div>';
       }
-      html += '<div class="rank-grid" id="hs-grid-' + escapeHtml(group.tag).replace(/\s/g, '_') + '">';
+      html += '<div class="rank-grid">';
       (group.items || []).forEach(function (item) {
         var safeName = escapeHtml(item.title || '未知');
         var safeDesc = escapeHtml(item.description || '');
-        var cover = item.coverImg || '';
+        var cover = item.coverImg || item.artwork || '';
         var dataAttrs = 'data-platform="' + escapeHtml(item.platform || '') + '"' +
           ' data-id="' + escapeHtml(item.id || '') + '"' +
           ' data-title="' + safeName + '"';
+        var extraKeys = [];
+        for (var k in item) {
+          if (['id', 'title', 'description', 'coverImg', 'artwork', 'platform'].indexOf(k) === -1) {
+            extraKeys.push(k + '=' + encodeURIComponent(String(item[k])));
+          }
+        }
+        dataAttrs += ' data-extra="' + escapeHtml(extraKeys.join('&')) + '"';
         html += '<div class="rank-card" onclick="openHotSheet(this)" ' + dataAttrs + '>' +
           '<img class="rank-card-cover" src="' + (cover || '') + '" alt="' + safeName + '" onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'" />' +
           '<div class="rank-card-cover rank-card-cover-fallback" style="display:' + (cover ? 'none' : 'flex') + ';background:linear-gradient(135deg,#e74c3c,#f39c12);font-size:40px;color:rgba(255,255,255,.9)">📋</div>' +
           '<div class="rank-card-body"><h3>' + safeName + '</h3><p>' + safeDesc + '</p></div></div>';
       });
       html += '</div>';
-      // 加载更多按钮
-      var tagState = _hsTagCtx[group.tag];
-      if (tagState && !tagState.isEnd) {
-        html += '<div id="hs-more-' + escapeHtml(group.tag).replace(/\s/g, '_') + '" class="empty-state" style="cursor:pointer;color:var(--primary)" onclick="loadMoreHotSheetTag(\'' + escapeHtml(group.platform) + '\',\'' + escapeHtml(group.tag).replace(/'/g, "\\'") + '\')">点击加载更多</div>';
-      }
     });
     hsListEl.innerHTML = html;
   }
@@ -1507,24 +1511,24 @@
     hsListEl.style.display = '';
     hsListEl.innerHTML = '<div class="empty-state">加载中...</div>';
     hsTagsEl.innerHTML = '';
-    _hsTagCtx = {};
-    ajax('GET', '/recommend-sheets/tags', null, function (err, data) {
+    ajax('GET', '/recommend-sheets', null, function (err, data) {
       if (err || !data) {
         hsListEl.innerHTML = '<div class="message error-message">加载失败</div>';
         return;
       }
-      var tagsByPlatform = data.tagsByPlatform || [];
-      if (tagsByPlatform.length === 0) {
+      allHsGroups = data.groups || [];
+      if (allHsGroups.length === 0) {
         hsListEl.innerHTML = '<div class="empty-state">暂无热门歌单，请确认已安装支持热门歌单的插件</div>';
         return;
       }
-      // 先获取所有平台及其标签
-      allHotSheetGroups = [];
-      var platformTags = {};
-      tagsByPlatform.forEach(function (entry) {
-        platformTags[entry.platform] = entry.tags || [];
+      var platforms = [];
+      var seen = {};
+      allHsGroups.forEach(function (g) {
+        if (!seen[g.platform]) {
+          seen[g.platform] = true;
+          platforms.push(g.platform);
+        }
       });
-      var platforms = Object.keys(platformTags);
       var tabsHtml = '';
       platforms.forEach(function (p) {
         tabsHtml += '<span class="rank-tab' + (p === platforms[0] ? ' active' : '') + '" data-hs-platform="' + escapeHtml(p) + '">' + escapeHtml(p) + '</span>';
@@ -1535,101 +1539,19 @@
           var prev = hsTagsEl.querySelector('.active');
           if (prev) prev.classList.remove('active');
           tab.classList.add('active');
-          var platform = tab.getAttribute('data-hs-platform');
-          loadHotSheetTag(platform, platformTags[platform]);
+          currentHsPlatform = tab.getAttribute('data-hs-platform');
+          renderHsGroups(currentHsPlatform);
         });
       });
-      loadHotSheetTag(platforms[0], platformTags[platforms[0]]);
-    });
-  }
-
-  var _hsTagCtx = {};
-
-  function loadHotSheetTag(platform, tags) {
-    hsListEl.innerHTML = '<div class="empty-state">加载中...</div>';
-    allHotSheetGroups = [];
-    _hsTagCtx = {};
-    if (!tags || tags.length === 0) {
-      hsListEl.innerHTML = '<div class="empty-state">该平台暂无热门歌单</div>';
-      return;
-    }
-    var done = 0;
-    tags.forEach(function (tag) {
-      _hsTagCtx[tag] = { page: 1, isEnd: false, loading: false };
-      ajax('GET', '/recommend-sheets/list?platform=' + encodeURIComponent(platform) + '&tag=' + encodeURIComponent(tag) + '&page=1&pageSize=20', null, function (err, data) {
-        done++;
-        if (!err && data && Array.isArray(data.sheets) && data.sheets.length > 0) {
-          allHotSheetGroups.push({ platform: platform, tag: tag, items: data.sheets });
-          if (data.isEnd === false) {
-            _hsTagCtx[tag].page = 2;
-          } else {
-            _hsTagCtx[tag].isEnd = true;
-          }
-        }
-        if (done >= tags.length) {
-          renderHotSheetGroups(platform);
-        }
-      });
-    });
-  }
-
-  window.loadMoreHotSheetTag = function (platform, tag) {
-    var state = _hsTagCtx[tag];
-    if (!state || state.isEnd || state.loading) return;
-    state.loading = true;
-    var moreEl = document.getElementById('hs-more-' + escapeHtml(tag).replace(/\s/g, '_'));
-    if (moreEl) moreEl.textContent = '加载中...';
-    ajax('GET', '/recommend-sheets/list?platform=' + encodeURIComponent(platform) + '&tag=' + encodeURIComponent(tag) + '&page=' + state.page + '&pageSize=20', null, function (err, data) {
-      state.loading = false;
-      if (err || !data) {
-        if (moreEl) moreEl.textContent = '加载失败，点击重试';
-        return;
-      }
-      var sheets = data.sheets || [];
-      if (sheets.length === 0) {
-        state.isEnd = true;
-        if (moreEl) moreEl.remove();
-        return;
-      }
-      if (data.isEnd === false) {
-        state.page++;
-      } else {
-        state.isEnd = true;
-      }
-      // 追加卡片到对应网格
-      var gridId = 'hs-grid-' + escapeHtml(tag).replace(/\s/g, '_');
-      var grid = document.getElementById(gridId);
-      if (grid) {
-        sheets.forEach(function (item) {
-          var safeName = escapeHtml(item.title || '未知');
-          var safeDesc = escapeHtml(item.description || '');
-          var cover = item.coverImg || '';
-          var dataAttrs = 'data-platform="' + escapeHtml(item.platform || '') + '"' +
-            ' data-id="' + escapeHtml(item.id || '') + '"' +
-            ' data-title="' + safeName + '"';
-          var card = document.createElement('div');
-          card.className = 'rank-card';
-          card.setAttribute('onclick', 'openHotSheet(this)');
-          card.setAttribute('data-platform', item.platform || '');
-          card.setAttribute('data-id', item.id || '');
-          card.setAttribute('data-title', item.title || '');
-          card.innerHTML = '<img class="rank-card-cover" src="' + (cover || '') + '" alt="' + safeName + '" onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'" />' +
-            '<div class="rank-card-cover rank-card-cover-fallback" style="display:' + (cover ? 'none' : 'flex') + ';background:linear-gradient(135deg,#e74c3c,#f39c12);font-size:40px;color:rgba(255,255,255,.9)">📋</div>' +
-            '<div class="rank-card-body"><h3>' + safeName + '</h3><p>' + safeDesc + '</p></div>';
-          grid.appendChild(card);
-        });
-      }
-      if (state.isEnd) {
-        if (moreEl) moreEl.remove();
-      } else {
-        if (moreEl) moreEl.textContent = '点击加载更多';
-      }
+      currentHsPlatform = platforms[0];
+      renderHsGroups(currentHsPlatform);
     });
   }
 
   window.openHotSheet = function (el) {
     hsCtx.platform = el.getAttribute('data-platform');
     hsCtx.id = el.getAttribute('data-id');
+    hsCtx.extraStr = el.getAttribute('data-extra') || '';
     hsCtx.page = 1;
     hsCtx.isEnd = false;
     hsCtx.loading = false;
@@ -1672,6 +1594,7 @@
       if (loader) loader.textContent = '加载中...';
     }
     var params = 'platform=' + encodeURIComponent(hsCtx.platform) + '&id=' + encodeURIComponent(hsCtx.id) + '&page=' + hsCtx.page + '&pageSize=20';
+    if (hsCtx.extraStr) params += '&' + hsCtx.extraStr;
     ajax('GET', '/recommend-sheets/detail?' + params, null, function (err, data) {
       hsCtx.loading = false;
       if (err || !data) {
@@ -1797,6 +1720,7 @@
     if (hsCtx.isEnd || hsCtx.loading) { if (cb) cb(); return; }
     hsCtx.loading = true;
     var params = 'platform=' + encodeURIComponent(hsCtx.platform) + '&id=' + encodeURIComponent(hsCtx.id) + '&page=' + hsCtx.page + '&pageSize=20';
+    if (hsCtx.extraStr) params += '&' + hsCtx.extraStr;
     ajax('GET', '/recommend-sheets/detail?' + params, null, function (err, data) {
       hsCtx.loading = false;
       if (err || !data) { if (cb) cb(); return; }
