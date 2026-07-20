@@ -134,3 +134,6 @@ npm run build
 ## 许可
 
 MIT
+
+License
+Apache-2.0
