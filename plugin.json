@@ -1,11 +1,11 @@
 {
   "name": "musicFree",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "MusicFree音源插件，允许Songloft使用MusicFree格式的音源插件",
   "author": "LIRJ",
   "entryPath": "musicfree-adapter",
   "main": "main.js",
-  "permissions": ["storage", "songs.read", "playlists.read", "jsenv", "fs"],
+  "permissions": ["storage", "songs.read", "playlists.read", "jsenv", "fs", "inter-plugin"],
   "updateUrl": "https://raw.githubusercontent.com/Lirenjun11/js_plugin/refs/heads/main/musicfree.json",
   "download_url": "https://raw.githubusercontent.com/Lirenjun11/js_plugin/refs/heads/main/musicfree-adapter.jsplugin.zip",
   "entryHash": "",

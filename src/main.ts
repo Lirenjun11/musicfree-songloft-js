@@ -67,6 +67,13 @@ interface TopListDetailResult {
   sheetItem?: Partial<MusicSheetItem>;
 }
 
+interface MusicSheetInfoResult {
+  isEnd?: boolean;
+  musicList: MusicItem[];
+  sheetItem?: Partial<MusicSheetItem>;
+  [key: string]: any;
+}
+
 interface MusicFreePlugin {
   platform: string;
   version: string;
@@ -80,8 +87,9 @@ interface MusicFreePlugin {
   getMusicInfo?: (musicBase: { id: string; platform?: string }) => Promise<Partial<MusicItem> | null>;
   getTopLists?: () => Promise<TopListGroup[]>;
   getTopListDetail?: (topListItem: MusicSheetItem, page: number) => Promise<TopListDetailResult>;
-  getRecommendSheetTags?: () => Promise<string[]>;
+  getRecommendSheetTags?: () => Promise<any>;
   getRecommendSheetsByTag?: (tag: any, page: number) => Promise<SearchResult>;
+  getMusicSheetInfo?: (sheetItem: MusicSheetItem, page: number) => Promise<MusicSheetInfoResult>;
 }
 
 const installedPlugins: Map<string, MusicFreePlugin> = new Map();
@@ -1271,6 +1279,8 @@ router.post('/external/search', async (req) => {
         cover_url: bestMatch.artwork || '',
         url: songUrl,
         source_data: sourceData,
+        dedup_key: bestMatch.platform + ':' + (bestMatch.id || ''),
+        plugin_entry_path: 'musicfree-adapter',
       },
     });
   } catch (error) {
@@ -2089,13 +2099,199 @@ router.get('/api/songloft-playlists', async (req) => {
   } catch (e) { return jsonResponse({ success: false, error: String(e) }, 500); }
 });
 
+// ===== MIoT 搜索源注册（对齐 songloft-plugin-bili 的实现） =====
+// 延迟 + 重试，规避与 miot 同时启动的竞态；
+// miot 未安装 / 旧版 host 无 comm 时静默跳过，绝不阻塞自身功能。
+function registerToMiot(): void {
+  let attempts = 0;
+  const tryRegister = async () => {
+    attempts++;
+    try {
+      if (!songloft.comm || typeof songloft.comm.call !== 'function') return; // 旧 host 无 comm
+      await songloft.comm.call('miot', 'register-search-provider', {
+        name: 'MusicFree',
+        searchPath: '/api/search/topone',
+        // searchPath: '/external/search',
+      });
+      songloft.log.info('[miot] 已向 miot 注册搜索源候选: MusicFree 音源');
+    } catch (e) {
+      if (attempts < 5) {
+        setTimeout(tryRegister, 3000);
+      } else {
+        songloft.log.info('[miot] miot 未安装/未就绪，放弃注册: ' + String(e));
+      }
+    }
+  };
+  setTimeout(tryRegister, 2000);
+}
+
+// POST /api/search/topone — 专供 miot 调用的搜索接口（与 Subsonic 插件路径一致）
+router.post('/api/search/topone', async (req) => {
+  try {
+    const body = await parseBody(req);
+    const keyword = String(body.keyword || '').trim();
+    const hint = body.hint || {};
+    const requestQuality = body.quality || '320k';
+
+    if (!keyword) {
+      return jsonResponse({ code: 400, msg: 'keyword 参数错误', data: null });
+    }
+
+    const qualityMap: Record<string, string> = {
+      '128k': 'low', 'low': 'low',
+      '320k': 'standard', 'standard': 'standard',
+      'flac': 'high', 'high': 'high',
+      'flac24': 'super', 'super': 'super',
+    };
+    const quality = qualityMap[requestQuality] || 'standard';
+
+    // 并行搜索所有启用的插件
+    const tasks = Array.from(installedPlugins)
+      .filter(([url, plugin]) => !disabledPlugins.has(url) && typeof plugin.search === 'function')
+      .map(async ([, plugin]) => {
+        try {
+          const result = await withTimeout(plugin.search!(keyword, 1, 'music'), PLUGIN_TIMEOUT, `Search[${plugin.platform}]`);
+          if (result && result.data) {
+            return result.data.map(item => ({ ...item, platform: plugin.platform, duration: normalizeDuration(item.duration) }));
+          }
+        } catch (error) {
+          songloft.log.warn(`External search[${plugin.platform}] failed: ${error}`);
+        }
+        return [] as MusicItem[];
+      });
+
+    const nested = await Promise.all(tasks);
+    const allResults = nested.flat();
+
+    if (allResults.length === 0) {
+      return jsonResponse({ code: 404, msg: '未找到歌曲', data: null });
+    }
+
+    function scoreMatch(item: MusicItem): number {
+      let score = 0;
+      const title = String(item.title || '').toLowerCase();
+      const artist = String(item.artist || '').toLowerCase();
+      const itemDuration = item.duration || 0;
+
+      if (hint.title && title === String(hint.title).toLowerCase()) score += 100;
+      else if (hint.title && title.indexOf(String(hint.title).toLowerCase()) !== -1) score += 50;
+      if (hint.artist && artist === String(hint.artist).toLowerCase()) score += 80;
+      else if (hint.artist && artist.indexOf(String(hint.artist).toLowerCase()) !== -1) score += 40;
+      if (hint.duration && itemDuration > 0) {
+        const diff = Math.abs(itemDuration - hint.duration);
+        if (diff <= 5) score += 60;
+        else if (diff <= 15) score += 30;
+        else if (diff <= 30) score += 10;
+      }
+      if (title.indexOf(keyword.toLowerCase()) !== -1) score += 20;
+      return score;
+    }
+
+    allResults.sort((a, b) => scoreMatch(b) - scoreMatch(a));
+    const bestMatch = allResults[0];
+
+    // 尝试获取完整歌曲信息
+    let fullMusicItem: MusicItem = bestMatch;
+    const matchPlugin = Array.from(installedPlugins.values()).find(p => p.platform === bestMatch.platform);
+    if (matchPlugin && typeof matchPlugin.getMusicInfo === 'function') {
+      try {
+        const fullInfo = await withTimeout(
+          matchPlugin.getMusicInfo({ id: bestMatch.id, platform: bestMatch.platform }),
+          PLUGIN_TIMEOUT, `getMusicInfo[${bestMatch.platform}]`
+        );
+        if (fullInfo) {
+          fullMusicItem = { ...bestMatch, ...fullInfo } as MusicItem;
+          fullMusicItem.duration = normalizeDuration(fullMusicItem.duration);
+        }
+      } catch (e) {
+        songloft.log.warn(`getMusicInfo failed for topone search: ${e}`);
+      }
+    }
+
+    // 获取播放地址
+    let songUrl = '';
+    let startQuality = 'standard';
+    try {
+      const rawSettings = await songloft.storage.get('adapter_settings');
+      if (rawSettings) {
+        const settings = JSON.parse(String(rawSettings));
+        if (settings.defaultQuality && QUALITY_ORDER.indexOf(settings.defaultQuality) !== -1) {
+          startQuality = settings.defaultQuality;
+        }
+      }
+    } catch (e) {}
+
+    const plugin = Array.from(installedPlugins.values()).find(p => p.platform === bestMatch.platform);
+    if (plugin && typeof plugin.getMediaSource === 'function') {
+      try {
+        const source = await resolveMediaSourceWithFallback(plugin, fullMusicItem, startQuality, bestMatch.platform);
+        if (source && source.url) {
+          songUrl = source.url;
+        }
+      } catch (error) {
+        songloft.log.error(`getMediaSource failed for topone search: ${error}`);
+      }
+    }
+
+    if (!songUrl) {
+      return jsonResponse({ code: 404, msg: '未找到可用的播放地址', data: null });
+    }
+
+    const artistStr = Array.isArray(bestMatch.artist) ? bestMatch.artist.join(' / ') : (bestMatch.artist || '');
+    const finalDuration = fullMusicItem.duration || bestMatch.duration || 0;
+
+    // source_data 必须与 /api/music/url 的入参约定一致：
+    // handleMusicUrl 会把整个 sourceData 作为 musicItem 直接传给 MusicFree 插件的 getMediaSource，
+    // 因此 id / hash / songmid 等插件用于解析播放地址的字段必须放在顶层，不能嵌套在 songInfo 下。
+    const sourceData: Record<string, any> = { platform: bestMatch.platform };
+    if (bestMatch.id) sourceData.id = bestMatch.id;
+    if ((bestMatch as any).musicId) sourceData.musicId = (bestMatch as any).musicId;
+    if ((bestMatch as any).songmid) sourceData.songmid = (bestMatch as any).songmid;
+    if ((bestMatch as any).hash) sourceData.hash = (bestMatch as any).hash;
+    if ((bestMatch as any).copyrightId) sourceData.copyrightId = (bestMatch as any).copyrightId;
+    if ((bestMatch as any).types) sourceData.types = (bestMatch as any).types;
+    // 同步 fullMusicItem 中可能补全的其他字段（如 qualities、lrc 等）
+    for (const key of Object.keys(fullMusicItem)) {
+      if (!(key in sourceData) && (fullMusicItem as any)[key] !== undefined) {
+        (sourceData as any)[key] = (fullMusicItem as any)[key];
+      }
+    }
+
+    return jsonResponse({
+      code: 0,
+      msg: 'success',
+      data: {
+        title: bestMatch.title || '',
+        artist: artistStr,
+        album: bestMatch.album || '',
+        duration: finalDuration,
+        cover_url: bestMatch.artwork || '',
+        url: songUrl,
+        source_data: sourceData,
+        dedup_key: bestMatch.platform + ':' + (bestMatch.id || ''),
+        plugin_entry_path: 'musicfree-adapter',
+      },
+    });
+  } catch (error) {
+    return jsonResponse({ code: 500, msg: String(error), data: null });
+  }
+});
+
 async function onInit(): Promise<void> {
   songloft.log.info('MusicFree adapter plugin initialized');
+  // 注册 miot 搜索源独立于插件加载，fire-and-forget 不阻塞 onInit，
+  // 避免 loadSavedPlugins 的 IO/网络耗时导致注册超时重试多次。
+  registerToMiot();
   await loadSavedPlugins();
 }
 
 async function onDeinit(): Promise<void> {
   songloft.log.info('MusicFree adapter plugin deinitialized');
+  try {
+    if (songloft.comm && typeof songloft.comm.call === 'function') {
+      await songloft.comm.call('miot', 'unregister-search-provider', {});
+    }
+  } catch { }
   installedPlugins.clear();
 }
 
@@ -2103,8 +2299,7 @@ async function onHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
   return await router.handle(req);
 }
 
-// QuickJS 全局注入：将生命周期函数挂载到全局对象
-const g = globalThis as Record<string, unknown>;
-g.onInit = onInit;
-g.onDeinit = onDeinit;
-g.onHTTPRequest = onHTTPRequest;
+// 生命周期函数挂载到全局（对齐 bili/ytdlp 等参考实现的写法）
+globalThis.onInit = onInit;
+globalThis.onDeinit = onDeinit;
+globalThis.onHTTPRequest = onHTTPRequest;
