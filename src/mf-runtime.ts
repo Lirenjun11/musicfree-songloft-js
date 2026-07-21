@@ -742,8 +742,15 @@ export function createRequire(): (name: string) => unknown {
     switch (name) {
       case 'crypto-js':
         return CryptoJs;
-      case 'axios':
-        return { default: axios, __esModule: true };
+      case 'axios': {
+        // 同时兼容两种写法：
+        //   1) 手写 CJS：const axios = require('axios'); axios.get(...)
+        //   2) webpack/babel 编译 ESM：_interopRequireDefault(require('axios')).default.get(...)
+        // 直接返回 axios 函数本体，并在其上挂 default / __esModule。
+        (axios as any).default = axios;
+        (axios as any).__esModule = true;
+        return axios;
+      }
       case 'crypto':
         return {};
       case 'cheerio':
