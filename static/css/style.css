@@ -6,9 +6,26 @@
   --primary-hover: #1d4ed8;
   --bg: #f7f8fa;
   --surface: #ffffff;
+  --bg-secondary: #f3f4f6;
   --danger: #dc2626;
   --radius: 8px;
   --player-h: 64px;
+  color-scheme: light;
+}
+
+/* 深色主题：跟随 songloft 主题设置（通过 <html data-theme="dark"> 或 <html class="dark"> 触发） */
+html[data-theme="dark"],
+html.dark {
+  --border: #2e3138;
+  --text: #e4e6eb;
+  --text-sub: #9ca3af;
+  --primary: #60a5fa;
+  --primary-hover: #93c5fd;
+  --bg: #16181d;
+  --surface: #1f2228;
+  --bg-secondary: #2a2e36;
+  --danger: #f87171;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -67,7 +84,7 @@ body {
   flex: 1; height: 36px; padding: 0 8px; min-width: 0;
   border: 1px solid var(--border); border-radius: var(--radius);
   font-size: 14px; outline: none;
-  background: #f3f4f6; color: var(--text); cursor: text;
+  background: var(--bg-secondary); color: var(--text); cursor: text;
 }
 .form-control {
   height: 36px; padding: 0 8px; border: 1px solid var(--border);
@@ -78,19 +95,19 @@ body {
 .btn {
   height: 36px; padding: 0 16px; border: none; border-radius: var(--radius);
   cursor: pointer; font-size: 14px; white-space: nowrap;
-  background: var(--bg); color: var(--text);
+  background: var(--bg-secondary); color: var(--text);
 }
-.btn:hover { background: #eceef1; }
+.btn:hover { background: var(--border); }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
 .btn-small { height: 28px; padding: 0 12px; font-size: 13px; }
-.btn-danger { background: #fee2e2; color: var(--danger); }
-.btn-danger:hover { background: #fecaca; }
+.btn-danger { background: rgba(220,38,38,.12); color: var(--danger); }
+.btn-danger:hover { background: rgba(220,38,38,.22); }
 
 .message { margin-top: 8px; padding: 8px 12px; border-radius: var(--radius); font-size: 13px; }
-.error-message { background: #fef2f2; color: var(--danger); }
-.success-message { background: #f0fdf4; color: #16a34a; }
+.error-message { background: rgba(220,38,38,.12); color: var(--danger); }
+.success-message { background: rgba(22,163,74,.12); color: #16a34a; }
 .empty-state { padding: 24px; text-align: center; color: var(--text-sub); }
 
 /* 表格 */
@@ -106,7 +123,7 @@ body {
 .data-table .col-cover { width: 48px; padding: 6px 8px; text-align: center; }
 /* 来源平台列（桌面端固定宽度，约4个字符） */
 .data-table .col-platform { width: 88px; white-space: nowrap; }
-.song-cover { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; background: #e5e7eb; vertical-align: middle; }
+.song-cover { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; background: var(--bg-secondary); vertical-align: middle; }
 .song-cover-fallback { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 4px; background: linear-gradient(135deg,#667eea,#764ba2); color: rgba(255,255,255,.9); font-size: 16px; vertical-align: middle; }
 .data-table td.col-op { text-align: right; white-space: nowrap; }
 .row-playing { background: rgba(37,99,235,.06); }
@@ -120,7 +137,7 @@ body {
 .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .switch-slider {
   position: absolute; inset: 0; cursor: pointer;
-  background: #cbd5e1; border-radius: 22px; transition: background .2s;
+  background: #6b7280; border-radius: 22px; transition: background .2s;
 }
 .switch-slider::before {
   content: ""; position: absolute; height: 18px; width: 18px;
@@ -144,10 +161,10 @@ body {
 .btn-import { background: var(--surface); color: var(--primary); border: 1px solid var(--primary); }
 .btn-import:hover { background: var(--primary); color: #fff; }
 .btn-imported { background: #10b981; color: #fff; border-color: #10b981; cursor: default; opacity: .8; }
-.quality-tag.q-super { color: #b45309; background: #fef3c7; border-color: #fde68a; }
-.quality-tag.q-high { color: #7c3aed; background: #f3e8ff; border-color: #e9d5ff; }
-.quality-tag.q-standard { color: #2563eb; background: #eff6ff; border-color: #dbeafe; }
-.quality-tag.q-low { color: #6b7280; background: #f3f4f6; border-color: #e5e7eb; }
+.quality-tag.q-super { color: #b45309; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.4); }
+.quality-tag.q-high { color: #8b5cf6; background: rgba(139,92,246,.14); border-color: rgba(139,92,246,.4); }
+.quality-tag.q-standard { color: var(--primary); background: rgba(37,99,235,.12); border-color: rgba(37,99,235,.35); }
+.quality-tag.q-low { color: var(--text-sub); background: var(--bg-secondary); border-color: var(--border); }
 
 /* 无插件友好提示卡片 */
 .tip-card {
@@ -204,7 +221,7 @@ body {
   height: 40px;
   border-radius: 4px;
   object-fit: cover;
-  background: #e5e7eb;
+  background: var(--bg-secondary);
   flex: none;
 }
 .hot-song-info {
@@ -244,7 +261,7 @@ body {
   z-index: 200;
 }
 #global-player.active { display: flex; }
-#gp-cover { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: #e5e7eb; flex: none; }
+#gp-cover { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--bg-secondary); flex: none; }
 #gp-meta { flex: none; width: 180px; min-width: 0; }
 #gp-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #gp-artist { font-size: 12px; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -388,7 +405,7 @@ body {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
-  background: #e5e7eb;
+  background: var(--bg-secondary);
   display: block;
 }
 .rank-card-body {
@@ -537,7 +554,7 @@ body {
   position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
   background: #333; color: #fff; padding: 10px 20px; border-radius: 8px;
   font-size: 14px; z-index: 9999; white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
   transition: opacity .3s;
 }
 .toast-message.toast-fade { opacity: 0; }

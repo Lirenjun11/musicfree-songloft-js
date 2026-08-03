@@ -1,6 +1,70 @@
 (function () {
   var BASE = '/api/v1/jsplugin/musicfree-adapter';
 
+  // ===== 主题跟随：读取 songloft 的主题设置并同步到本插件页面 =====
+  // 插件设置页与 songloft 主站同源，可直接读取 localStorage 中的主题配置。
+  // 同时兼容宿主通过 postMessage 下发主题，以及系统 prefers-color-scheme 兜底。
+  function detectSongloftTheme() {
+    // 1. 常见的 songloft / 通用主题存储键
+    var keys = ['theme', 'songloft-theme', 'theme-mode', 'app-theme', 'color-theme', 'settings'];
+    for (var i = 0; i < keys.length; i++) {
+      var raw = null;
+      try { raw = localStorage.getItem(keys[i]); } catch (e) {}
+      if (!raw) continue;
+      var val = String(raw).toLowerCase();
+      // settings 可能是 JSON 对象
+      if (val.charAt(0) === '{') {
+        try {
+          var obj = JSON.parse(raw);
+          var mode = (obj.theme || obj.themeMode || obj.mode || obj.appearance || '').toString().toLowerCase();
+          if (mode === 'dark' || mode === 'light') return mode;
+        } catch (e) {}
+      }
+      if (val.indexOf('dark') !== -1) return 'dark';
+      if (val.indexOf('light') !== -1) return 'light';
+    }
+    // 2. 兜底：跟随系统
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+    return 'light';
+  }
+
+  function applyTheme(theme) {
+    var isDark = theme === 'dark';
+    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+    document.documentElement.classList.toggle('dark', isDark);
+  }
+
+  function syncTheme() {
+    applyTheme(detectSongloftTheme());
+  }
+
+  // 初始化时立即应用，避免闪白
+  syncTheme();
+
+  // 监听其他标签页中 localStorage 的变化（用户在设置中切换主题）
+  window.addEventListener('storage', function (e) {
+    if (e.key && /theme|appearance|settings/i.test(e.key)) syncTheme();
+  });
+
+  // 监听宿主通过 postMessage 下发的主题（若插件运行在 iframe 中）
+  window.addEventListener('message', function (e) {
+    var data = e.data;
+    if (!data || typeof data !== 'object') return;
+    var theme = data.theme || data.themeMode || (data.payload && data.payload.theme);
+    if (theme === 'dark' || theme === 'light') applyTheme(theme);
+  });
+
+  // 监听系统主题变化（仅当未存储显式偏好时生效）
+  if (window.matchMedia) {
+    var mql = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mql.addEventListener) {
+      mql.addEventListener('change', syncTheme);
+    } else if (mql.addListener) {
+      mql.addListener(syncTheme);
+    }
+  }
+  // ===== 主题跟随结束 =====
+
   function getToken() {
     var auth = JSON.parse(localStorage.getItem('songloft-auth') || '{}');
     return auth.accessToken || '';

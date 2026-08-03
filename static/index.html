@@ -5,6 +5,34 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>MusicFree Adapter</title>
+  <script>
+    // 主题跟随：在样式表加载前尽早应用 songloft 主题，避免闪白
+    (function () {
+      try {
+        var theme = 'light';
+        var keys = ['theme', 'songloft-theme', 'theme-mode', 'app-theme', 'color-theme', 'settings'];
+        for (var i = 0; i < keys.length; i++) {
+          var raw = localStorage.getItem(keys[i]);
+          if (!raw) continue;
+          var val = String(raw).toLowerCase();
+          if (val.charAt(0) === '{') {
+            try {
+              var obj = JSON.parse(raw);
+              var mode = String(obj.theme || obj.themeMode || obj.mode || obj.appearance || '').toLowerCase();
+              if (mode === 'dark' || mode === 'light') { theme = mode; break; }
+            } catch (e) {}
+          }
+          if (val.indexOf('dark') !== -1) { theme = 'dark'; break; }
+          if (val.indexOf('light') !== -1) { theme = 'light'; break; }
+        }
+        if (theme === 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          theme = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        if (theme === 'dark') document.documentElement.classList.add('dark');
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="static/css/style.css" />
 </head>
 

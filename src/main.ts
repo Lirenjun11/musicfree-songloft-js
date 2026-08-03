@@ -134,7 +134,9 @@ async function resolveMediaSourceWithFallback(plugin: MusicFreePlugin, musicItem
           songloft.log.warn(`getMediaSource[${platform}][${q}] returned lower quality URL (detected: ${urlQuality}), trying lower quality`);
           continue;
         }
-        return { ...source, quality: q, _fallback: i > startIdx ? QUALITY_ORDER.slice(startIdx, i) : undefined };
+        // 优先使用从 URL 检测到的真实音质作为返回值，避免界面显示与实际不符
+        const finalQuality = urlQuality || q;
+        return { ...source, quality: finalQuality, _fallback: i > startIdx ? QUALITY_ORDER.slice(startIdx, i) : undefined };
       }
     } catch (error) {
       songloft.log.warn(`getMediaSource[${platform}][${q}] failed: ${error}, trying lower quality`);
