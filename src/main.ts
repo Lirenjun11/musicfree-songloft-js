@@ -127,6 +127,13 @@ async function resolveMediaSourceWithFallback(plugin: MusicFreePlugin, musicItem
     try {
       const source = await withTimeout(plugin.getMediaSource!(musicItem, q), PLUGIN_TIMEOUT, `getMediaSource[${platform}][${q}]`);
       if (source && source.url) {
+        // 校验返回的 URL 是否为不可播放的加密/私有格式（如 mgg/kgm/qmc 等）
+        const unplayable = detectUnplayableFormat(source.url, source);
+        if (unplayable) {
+          // 高音质可能返回加密文件，降级尝试下一级音质
+          songloft.log.warn(`getMediaSource[${platform}][${q}] returned unplayable format (${unplayable}), trying lower quality`);
+          continue;
+        }
         // 校验返回的 URL 实际音质是否匹配请求的音质
         const urlQuality = detectUrlQuality(source.url);
         if (urlQuality && QUALITY_ORDER.indexOf(urlQuality) > i) {
@@ -145,13 +152,73 @@ async function resolveMediaSourceWithFallback(plugin: MusicFreePlugin, musicItem
   return null;
 }
 
+// 主流音乐平台的加密/私有音频格式扩展名（标准播放器无法直接播放）
+// - 酷狗：kgm / kgma / vpr
+// - QQ音乐：qmc0/qmc2/qmc3/qmcogg/qmcflac、mgg/mggl/mgg2、mflac/mflac0
+// - 网易云：ncm
+// - 咪咕/其他：mg3、qmc 系列
+const UNPLAYABLE_EXTENSIONS = [
+  'mgg', 'mggl', 'mgg2', 'mflac', 'mflac0',
+  'qmc0', 'qmc2', 'qmc3', 'qmcogg', 'qmcflac', 'qmc',
+  'kgm', 'kgma', 'vpr', 'ncm', 'mg3', 'tm2', 'tm6',
+];
+
+// 从 URL 中提取路径部分的扩展名（忽略 query/hash）
+function extractUrlExtension(url: string): string {
+  try {
+    // 去掉 query 和 hash
+    const path = url.split('?')[0].split('#')[0];
+    // 取最后一个 . 后的片段
+    const dotIdx = path.lastIndexOf('.');
+    if (dotIdx === -1) return '';
+    return path.substring(dotIdx + 1).toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+// 检测返回的播放地址是否为不可播放的加密/私有格式。
+// 返回匹配到的格式标识（字符串）表示不可播放；返回 null 表示格式可接受。
+function detectUnplayableFormat(url: string, source?: MediaSource | null): string | null {
+  if (!url) return null;
+  const lower = url.toLowerCase();
+
+  // 1. 路径扩展名匹配（如 .mgg、.kgm、.qmcflac、.ncm）
+  const ext = extractUrlExtension(url);
+  if (ext && UNPLAYABLE_EXTENSIONS.indexOf(ext) !== -1) {
+    return ext;
+  }
+
+  // 2. 部分平台 URL 通过参数/路径段标识加密格式（如 format=mgg、/mgg/、fname=xxx.mgg）
+  for (const badExt of UNPLAYABLE_EXTENSIONS) {
+    const re = new RegExp('[./?&=-]' + badExt + '(?:[?&#]|$)', 'i');
+    if (re.test(lower)) return badExt;
+  }
+
+  // 3. 检查 source 上可能携带的 format/ext/suffix 字段
+  if (source) {
+    const fields = [(source as any).format, (source as any).ext, (source as any).suffix, (source as any).type];
+    for (const f of fields) {
+      if (typeof f === 'string') {
+        const v = f.toLowerCase().replace(/^\./, '').trim();
+        if (v && UNPLAYABLE_EXTENSIONS.indexOf(v) !== -1) return v;
+      }
+    }
+  }
+
+  return null;
+}
+
 // 根据 URL 推断实际音质等级
 function detectUrlQuality(url: string): string | null {
   const lower = url.toLowerCase();
   if (/\.flac(\?|$)/i.test(lower)) return 'high';
-  if (/\.mp3(\?|$)/i.test(lower)) return 'standard';
   if (/\.wav(\?|$)/i.test(lower)) return 'super';
+  if (/\.mp3(\?|$)/i.test(lower)) return 'standard';
+  if (/\.m4a(\?|$)/i.test(lower)) return 'standard';
+  if (/\.aac(\?|$)/i.test(lower)) return 'standard';
   if (/\.ogg(\?|$)/i.test(lower)) return 'standard';
+  if (/\.opus(\?|$)/i.test(lower)) return 'standard';
   // 酷狗 URL 中的音质标识
   if (/qu128|_128\./i.test(lower)) return 'low';
   if (/qu320|_320\./i.test(lower)) return 'standard';
