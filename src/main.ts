@@ -1978,6 +1978,70 @@ async function fetchNeteasePlaylist(playlistId: string): Promise<{ name: string;
   return { name: playlistName, count: songs.length, songs };
 }
 
+// ===== QQ 音乐歌单解析 =====
+function extractQQId(text: string): string {
+  const m = text.match(/[?&]id=(\d+)/);
+  if (m) return m[1];
+  if (/^\d+$/.test(text.trim())) return text.trim();
+  return '';
+}
+
+async function resolveQQId(url: string): Promise<string> {
+  const direct = extractQQId(url);
+  if (direct) return direct;
+  // 短链（c6.y.qq.com/base/fcgi-bin/u?__=xxx）：跟随 302 取最终 URL
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148' },
+    });
+    const finalUrl = (resp as any).url || url;
+    const id = extractQQId(finalUrl);
+    if (id) return id;
+    const h = (resp as any).headers;
+    if (h && typeof h.get === 'function') {
+      const loc = h.get('location');
+      if (loc) { const m = extractQQId(loc); if (m) return m; }
+    }
+  } catch { }
+  return '';
+}
+
+async function fetchQQPlaylist(disstid: string): Promise<{ name: string; count: number; songs: TPSong[] }> {
+  const apiUrl = 'https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg'
+    + `?type=1&json=1&utf8=1&onlysong=0&disstid=${disstid}&format=json`
+    + '&inCharset=utf8&outCharset=utf-8&g_tk=5381';
+  const resp = await fetch(apiUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Referer': 'https://y.qq.com/',
+    },
+  });
+  if (!resp.ok) throw new Error(`获取QQ音乐歌单失败: HTTP ${resp.status}`);
+  const data = await resp.json() as Record<string, unknown>;
+  if (Number(data.code) !== 0) throw new Error(`QQ音乐 API 错误: ${String(data.msg || '')}`);
+  const list = (data.cdlist || []) as Array<Record<string, unknown>>;
+  if (list.length === 0) throw new Error('QQ音乐歌单不存在或未公开');
+  const info = list[0];
+  const name = String(info.dissname || 'QQ音乐歌单');
+  const songlist = Array.isArray(info.songlist) ? info.songlist as Array<Record<string, unknown>> : [];
+  const songs: TPSong[] = songlist.map((s: Record<string, unknown>) => {
+    const singers = Array.isArray(s.singer) ? s.singer as Array<Record<string, unknown>> : [];
+    const album = (s.album || {}) as Record<string, unknown>;
+    return {
+      name: String(s.songname || '未知歌曲'),
+      singer: singers.map(x => String(x.name || '')).filter(Boolean).join('/'),
+      hash: String(s.songmid || ''),
+      album_id: String(s.albummid || ''),
+      albumName: String(album.name || album.albumname || ''),
+      duration: Math.round(Number(s.interval || 0)),
+      cover: String(info.logo || ''),
+    };
+  });
+  return { name, count: songs.length, songs };
+}
+
 // 解析三方歌单链接
 router.post('/api/third-party/parse', async (req) => {
   try {
@@ -1996,6 +2060,10 @@ router.post('/api/third-party/parse', async (req) => {
       const id = extractNeteaseId(url);
       if (!id) return jsonResponse({ error: '无法从链接中提取网易云歌单ID，请粘贴 https://music.163.com/#/playlist?id=xxx 形式的链接' }, 400);
       result = await fetchNeteasePlaylist(id);
+    } else if (platform === 'qq') {
+      const id = await resolveQQId(url);
+      if (!id) return jsonResponse({ error: '无法从链接中提取QQ音乐歌单ID，支持 y.qq.com 歌单链接或 c6.y.qq.com 短链' }, 400);
+      result = await fetchQQPlaylist(id);
     } else {
       // 默认酷狗
       let params = extractKugouParams(url);

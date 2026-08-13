@@ -2375,6 +2375,10 @@
     netease: {
       placeholder: '粘贴网易云歌单分享链接，如 https://music.163.com/#/playlist?id=xxx',
       hint: '支持网易云音乐歌单分享链接（如 music.163.com/playlist?id=xxx），可直接输入歌单ID'
+    },
+    qq: {
+      placeholder: '粘贴QQ音乐歌单链接或短链',
+      hint: '支持 y.qq.com/i2.y.qq.com 歌单直链、c6.y.qq.com 短链，或直接输入歌单ID'
     }
   };
   var tpPlatformEl = document.getElementById('tp-platform');
