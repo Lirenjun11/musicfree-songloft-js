@@ -2617,11 +2617,11 @@
           return;
         }
         matched.push({ song: song, match: match });
-        // 本地已存在：跳过创建，但如需加入歌单则记录 ID
+        // 本地已存在：跳过创建，但需加入歌单（含新建歌单，finish 时 targetPlaylistId 已确定）
         if (match.source === 'local' && match.local_song_id) {
           localSkipped++;
           localMatched++;
-          if (playlistId && playlistId !== 'new') allSongIds.push(match.local_song_id);
+          allSongIds.push(match.local_song_id);
           if (btn) { btn.disabled = false; btn.textContent = '已导入'; btn.classList.add('btn-imported'); }
           if (importBtn) importBtn.textContent = '导入中 ' + done + '/' + total;
           processOne(i + 1);

@@ -2118,10 +2118,15 @@ router.post('/api/third-party/match', async (req) => {
     try {
       const sl = (globalThis as any).songloft;
       if (sl?.songs?.list) {
-        const localSongs = sl.songs.list({ limit: 5000, offset: 0 }) as Array<{
-          id: number; title: string; artist: string; album: string; duration: number;
-          cover_url?: string; source_data?: any;
-        }>;
+        // songs.list 返回 Promise，必须 await；分页拉取避免 limit 上限漏匹配
+        const localSongs: any[] = [];
+        const PAGE = 1000, MAX = 50000;
+        for (let offset = 0; offset < MAX; offset += PAGE) {
+          const batch = await sl.songs.list({ limit: PAGE, offset });
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          localSongs.push(...batch);
+          if (batch.length < PAGE) break;
+        }
         for (const s of localSongs) {
           const tNorm = normalize(s.title);
           const aNorm = normalize(s.artist);
@@ -2146,20 +2151,22 @@ router.post('/api/third-party/match', async (req) => {
           }
         }
         if (localBest && localBestScore >= 50) {
+          const srcRaw = localBest.source_data ?? localBest.sourceData;
           let srcData: any = null;
-          try { srcData = typeof localBest.source_data === 'string' ? JSON.parse(localBest.source_data) : localBest.source_data; } catch { srcData = null; }
+          try { srcData = typeof srcRaw === 'string' ? JSON.parse(srcRaw) : srcRaw; } catch { srcData = null; }
+          const cover = localBest.cover_url ?? localBest.coverUrl ?? localBest.coverPath ?? '';
           // 只有 source_data 含有效 platform/id 时才能走插件解析播放
           const validSrc = srcData && srcData.platform && srcData.id && srcData.platform !== 'local';
           const playItem = validSrc
-            ? { ...srcData, title: localBest.title, artist: localBest.artist, album: localBest.album || srcData.album, artwork: localBest.cover_url || srcData.artwork, duration: normalizeDuration(localBest.duration) || srcData.duration }
+            ? { ...srcData, title: localBest.title, artist: localBest.artist, album: localBest.album || srcData.album, artwork: cover || srcData.artwork, duration: normalizeDuration(localBest.duration) || srcData.duration }
             : null;
           return jsonResponse({
             matched: true, source: 'local', title: localBest.title, artist: localBest.artist || '',
             album: localBest.album || '', duration: normalizeDuration(localBest.duration) || 0,
-            cover_url: localBest.cover_url || '',
+            cover_url: cover,
             source_data: playItem,
             local_song_id: localBest.id, // 已存在本地库，导入时可跳过
-            playable: !!playItem,
+            playable: !!playItem || localBest.url || localBest.filePath,
           });
         }
       }
